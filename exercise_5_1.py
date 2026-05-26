@@ -21,9 +21,6 @@ sDistrict, bOk = QInputDialog.getItem(parent, "District Names", "Select District
 
 
 if bOk:
-    # Create a mapCanvas() instance
-    mc = iface.mapCanvas()
-
     # Create a QgsDistanceArea() instance
     da = QgsDistanceArea()
 
@@ -37,6 +34,8 @@ if bOk:
     # Use name filter to access the selected district feature
     selected_district_feature = list(city_districts.getFeatures(selected_district_request))[0]    
     selected_district_geom = selected_district_feature.geometry()
+    selected_district_centroid = selected_district_geom.centroid()
+    print(selected_district_centroid)
     
     # get schools layer
     schools = QgsProject.instance().mapLayersByName('Schools')[0]
@@ -53,16 +52,25 @@ if bOk:
         school_geom = school.geometry()
         if school_geom.within(selected_district_geom):
             school_attrs = school.attributes()
+            
+            distance = QgsDistanceArea()
+            measurement = distance.measureLine(
+                school_geom.asPoint(),
+                selected_district_centroid.asPoint())
+            distance_from_centroid_km_rounded_i_suppose = round(measurement/1000,2)
+            
+            if len(ids) > 0:
+                district_schools += "\n\n"  # add new lines except for the first school name to prevent leading new lines
+            
+            # add school to string for dialogue
+            district_schools += f"{school_attrs[1]}, {school_attrs[2]}\nDistance to district centrum {distance_from_centroid_km_rounded_i_suppose} km"
+            
             # save school id
             ids.append(school_attrs[0])
-            # add school to string for dialogue
-            district_schools += f"{school_attrs[1]}, {school_attrs[2]}"
-            if index != schools.featureCount() - 1:
-                district_schools += "\n\n"  # add new lines except for the last school name to prevent trailing new lines
             
     # select schools within the district and zoom to them
-    schools.selectByExpression(f"Number in ({', '.join(str(i) for i in ids)})", QgsVectorLayer.SetSelection)
-    mc.zoomToSelected()
+    schools.selectByExpression(f"Number in ({', '.join(str(i) for i in ids)})", QgsVectorLayer.SetSelection) 
+    iface.mapCanvas().zoomToSelected()
 
     # show schools in district dialogue
     QMessageBox.information(parent, f"Schools in {sDistrict}", district_schools)
