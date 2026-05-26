@@ -53,6 +53,7 @@ if bOk:
         if school_geom.within(selected_district_geom):
             school_attrs = school.attributes()
             
+            # measure distance wbetween centroid and school 
             distance = QgsDistanceArea()
             measurement = distance.measureLine(
                 school_geom.asPoint(),
