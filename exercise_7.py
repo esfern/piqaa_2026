@@ -10,21 +10,45 @@
 """
 
 from typing import Any, Optional
+import os
+import time
+from datetime import datetime
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
 
 from qgis.core import (
-    QgsFeatureSink,
-    QgsProcessing,
     QgsProcessingAlgorithm,
-    QgsProcessingContext,
     QgsProcessingException,
-    QgsProcessingFeedback,
-    QgsProcessingParameterFeatureSink,
-    QgsProcessingParameterFeatureSource,
     QgsProcessingParameterEnum,
     QgsProject,
     QgsProcessingParameterFolderDestination,
 )
 from qgis import processing
+from qgis.utils import iface
+
+
+def get_sorted_district_names():
+    """
+    Returns an alphabetically sorted list of city district names
+    from the 'Muenster_City_Districts' layer.
+    
+    Returns:
+        list: Sorted list of district names
+    """
+    districts_names = []
+    try:
+        districts_layer = QgsProject.instance().mapLayersByName('Muenster_City_Districts')[0]
+        for district_feature in districts_layer.getFeatures():
+            district_attrs = district_feature.attributes()
+            district_name = district_attrs[3]  # "Name" column
+            districts_names.append(district_name)
+        districts_names.sort()
+    except (IndexError, AttributeError) as e:
+        raise QgsProcessingException(f"Could not load Muenster_City_Districts layer: {str(e)}")
+    
+    return districts_names
 
 
 class ExampleProcessingAlgorithm(QgsProcessingAlgorithm):
@@ -57,21 +81,21 @@ class ExampleProcessingAlgorithm(QgsProcessingAlgorithm):
         lowercase alphanumeric characters only and no spaces or other
         formatting characters.
         """
-        return "myscript"
+        return "createcitydistrictprofile"
 
     def displayName(self) -> str:
         """
         Returns the translated algorithm name, which should be used for any
         user-visible display of the algorithm name.
         """
-        return "My Script"
+        return "Create City District Profile"
 
     def group(self) -> str:
         """
         Returns the name of the group this algorithm belongs to. This string
         should be localised.
         """
-        return "Example scripts"
+        return "City District Analysis"
 
     def groupId(self) -> str:
         """
@@ -81,7 +105,7 @@ class ExampleProcessingAlgorithm(QgsProcessingAlgorithm):
         contain lowercase alphanumeric characters only and no spaces or other
         formatting characters.
         """
-        return "examplescripts"
+        return "citydistrictanalysis"
 
     def shortHelpString(self) -> str:
         """
@@ -89,7 +113,7 @@ class ExampleProcessingAlgorithm(QgsProcessingAlgorithm):
         should provide a basic description about what the algorithm does and the
         parameters and outputs associated with it.
         """
-        return "Example algorithm short description"
+        return "Creates a PDF profile for a selected city district including district information, household count, parcels, schools/pools, and a map image."
 
     def initAlgorithm(self, config: Optional[dict[str, Any]] = None):
         """
@@ -97,12 +121,8 @@ class ExampleProcessingAlgorithm(QgsProcessingAlgorithm):
         with some other properties.
         """
         
-        districts_names = []
-        districts_layer = QgsProject.instance().mapLayersByName('Muenster_City_Districts')[0]
-        for district_feature in districts_layer.getFeatures():
-            district_attrs = district_feature.attributes()
-            district_name = district_attrs[3]
-            districts_names.append(district_name)
+        # Get sorted district names using helper function
+        districts_names = get_sorted_district_names()
         
         self.addParameter(
             QgsProcessingParameterEnum(
@@ -133,91 +153,154 @@ class ExampleProcessingAlgorithm(QgsProcessingAlgorithm):
     def processAlgorithm(
         self,
         parameters: dict[str, Any],
-        context: QgsProcessingContext,
-        feedback: QgsProcessingFeedback,
+        context,
+        feedback,
     ) -> dict[str, Any]:
-        """
-        Here is where the processing itself takes place.
-        """
+        try:
+            # Get parameters
+            selected_district_index = parameters[self.SELECTED_NAME]
+            selected_data_type = parameters[self.SELECTED_DATA_TYPE]
+            output_folder = parameters[self.OUTPUT]
+            
+            # Ensure output directory exists
+            if not os.path.exists(output_folder):
+                os.makedirs(output_folder)
+            
+            # Get all district names (sorted)
+            districts_names = get_sorted_district_names()
+            selected_district_name = districts_names[selected_district_index]
+                        
+            # Get the districts layer
+            districts_layer = QgsProject.instance().mapLayersByName('Muenster_City_Districts')[0]
+            
+            # Find the selected district feature
+            district_feature = None
+            for feature in districts_layer.getFeatures():
+                if feature.attributes()[3] == selected_district_name:
+                    district_feature = feature
+                    break
+            
+            if not district_feature:
+                raise QgsProcessingException(f"District '{selected_district_name}' not found in layer 'Muenster_City_Districts'.")
+            
+            # Extract district information
+            district_attrs = district_feature.attributes()
+            district_name = district_attrs[3]
+            parent_district = district_attrs[4]
+            
+            # Calculate area from geometry
+            district_geom = district_feature.geometry()
+            area_m2 = district_geom.area()
+            area_km2 = area_m2 / 1_000_000
 
-        # Retrieve the feature source and sink. The 'dest_id' variable is used
-        # to uniquely identify the feature sink, and must be included in the
-        # dictionary returned by the processAlgorithm function.
-        source = self.parameterAsSource(parameters, self.INPUT, context)
-
-        # If source was not found, throw an exception to indicate that the algorithm
-        # encountered a fatal error. The exception text can be any string, but in this
-        # case we use the pre-built invalidSourceError method to return a standard
-        # helper text for when a source cannot be evaluated
-        if source is None:
-            raise QgsProcessingException(
-                self.invalidSourceError(parameters, self.INPUT)
+            # Count households
+            house_numbers_layer = QgsProject.instance().mapLayersByName('House_Numbers')[0]
+            household_count = 0
+            for feature in house_numbers_layer.getFeatures():
+                geom = feature.geometry()
+                if geom.intersects(district_geom):
+                    household_count += 1
+            
+            # Count parcels
+            parcels_layer = QgsProject.instance().mapLayersByName('Muenster_Parcels')[0]
+            parcel_count = 0
+            for feature in parcels_layer.getFeatures():
+                geom = feature.geometry()
+                if geom.intersects(district_geom):
+                    parcel_count += 1
+            
+            # Count schools or pools
+            if selected_data_type == 0:
+                layer_name = 'public_swimming_pools'
+            else:
+                layer_name = 'Schools'
+            
+            data_layer = QgsProject.instance().mapLayersByName(layer_name)[0]
+            data_count = 0
+            for feature in data_layer.getFeatures():
+                geom = feature.geometry()
+                if geom.intersects(district_geom):
+                    data_count += 1
+            
+            data_type_name = "Pools" if selected_data_type == 0 else "Schools"
+            
+            # Create map image
+            map_image_path = os.path.join(output_folder, f"{district_name}_map.png")
+            self._create_map_image(district_feature, districts_layer, map_image_path)
+            
+            # Create PDF
+            pdf_path = os.path.join(output_folder, f"{district_name}_profile.pdf")
+            self._create_pdf(
+                pdf_path,
+                district_name,
+                parent_district,
+                area_km2,
+                household_count,
+                parcel_count,
+                data_count,
+                data_type_name,
+                map_image_path,
             )
+                        
+            return {self.OUTPUT: output_folder}
+        
+        except Exception as e:
+            raise QgsProcessingException(f"Error creating district profile: {str(e)}")
+    
+    def _create_map_image(self, district_feature, districts_layer, output_path):
+        # Select district feature in canvas, zoom to selection, wait, then save image.
+        canvas = iface.mapCanvas()
+        canvas.setCurrentLayer(districts_layer)
 
-        (sink, dest_id) = self.parameterAsSink(
-            parameters,
-            self.OUTPUT,
-            context,
-            source.fields(),
-            source.wkbType(),
-            source.sourceCrs(),
-        )
+        districts_layer.removeSelection()
+        districts_layer.selectByIds([district_feature.id()])
 
-        # Send some information to the user
-        feedback.pushInfo(f"CRS is {source.sourceCrs().authid()}")
+        canvas.zoomToSelected(districts_layer)
+        canvas.refresh()
 
-        # If sink was not created, throw an exception to indicate that the algorithm
-        # encountered a fatal error. The exception text can be any string, but in this
-        # case we use the pre-built invalidSinkError method to return a standard
-        # helper text for when a sink cannot be evaluated
-        if sink is None:
-            raise QgsProcessingException(self.invalidSinkError(parameters, self.OUTPUT))
+        # Give the canvas time to draw before exporting the image.
+        time.sleep(5)
+        canvas.saveAsImage(output_path)
 
-        # Compute the number of steps to display within the progress bar and
-        # get features from source
-        total = 100.0 / source.featureCount() if source.featureCount() else 0
-        features = source.getFeatures()
+        districts_layer.removeSelection()
+    
+    def _create_pdf(self, pdf_path, district_name, parent_district, area_km2, household_count, parcel_count, data_count, data_type_name, map_image_path):
+        # Create PDF
+        doc = SimpleDocTemplate(pdf_path, pagesize=A4)
+        elements = []
+        
+        # Use default style only and plain line breaks.
+        styles = getSampleStyleSheet()
+        lines = [
+            f"{district_name} - District Profile",
+            "",
+            f"District Name: {district_name}",
+            f"Parent District: {parent_district}",
+            f"Area: {area_km2:.2f} km²",
+            f"Number of Households: {household_count}",
+            f"Number of Parcels: {parcel_count}",
+            f"Number of {data_type_name}: {data_count}",
+            "",
+            "District Map:",
+        ]
 
-        for current, feature in enumerate(features):
-            # Stop the algorithm if cancel button has been clicked
-            if feedback.isCanceled():
-                break
-
-            # Add a feature in the sink
-            sink.addFeature(feature, QgsFeatureSink.Flag.FastInsert)
-
-            # Update the progress bar
-            feedback.setProgress(int(current * total))
-
-        # To run another Processing algorithm as part of this algorithm, you can use
-        # processing.run(...). Make sure you pass the current context and feedback
-        # to processing.run to ensure that all temporary layer outputs are available
-        # to the executed algorithm, and that the executed algorithm can send feedback
-        # reports to the user (and correctly handle cancellation and progress reports!)
-        if False:
-            buffered_layer = processing.run(
-                "native:buffer",
-                {
-                    "INPUT": dest_id,
-                    "DISTANCE": 1.5,
-                    "SEGMENTS": 5,
-                    "END_CAP_STYLE": 0,
-                    "JOIN_STYLE": 0,
-                    "MITER_LIMIT": 2,
-                    "DISSOLVE": False,
-                    "OUTPUT": "memory:",
-                },
-                context=context,
-                feedback=feedback,
-            )["OUTPUT"]
-
-        # Return the results of the algorithm. In this case our only result is
-        # the feature sink which contains the processed features, but some
-        # algorithms may return multiple feature sinks, calculated numeric
-        # statistics, etc. These should all be included in the returned
-        # dictionary, with keys matching the feature corresponding parameter
-        # or output names.
-        return {self.OUTPUT: dest_id}
+        for line in lines:
+            elements.append(Paragraph(line, styles['Normal']))
+            elements.append(Spacer(1, 6))
+        
+        # Add map image if it exists
+        if os.path.exists(map_image_path):
+            try:
+                img = Image(map_image_path, width=150*mm, height=112.5*mm)
+                elements.append(img)
+            except Exception as e:
+                elements.append(Paragraph(f"Could not load map image: {str(e)}", styles['Normal']))
+        
+        # Add timestamp
+        elements.append(Spacer(1, 20))
+        
+        # Build PDF
+        doc.build(elements)
 
     def createInstance(self):
         return self.__class__()
