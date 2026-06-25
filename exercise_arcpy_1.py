@@ -9,10 +9,8 @@ arcpy.env.overwriteOutput = True
 SIZES = {"mast": "300 Meters", "mobile_antenna": "50 Meters", "building_antenna": "100  Meters"}
 
 def create_buffers():
-
     # Lists all feature classes of type point
     point_fcs = arcpy.ListFeatureClasses(feature_type="Point")
-
     
     fields = ["SHAPE@", "status", "type"]
     # initiate the insert curser
@@ -27,8 +25,9 @@ def create_buffers():
                     i_cur.insertRow(row) # insert feature into active_assets
         i_cur.delete() # Remove the insert cursor
 
+    # empty array for all buffer layer paths
     buffers = []
-    print(arcpy.env.workspace)
+
     # Create a buffer layer for each feature class
     for t, dist in SIZES.items():
         lyr = f"lyr_{t}"
